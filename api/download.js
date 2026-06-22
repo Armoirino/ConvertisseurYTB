@@ -1,10 +1,12 @@
 const fs = require('fs');
 const os = require('os');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
 const path = require('path');
+const ffmpegPath = require('ffmpeg-static');
+const YTDlpWrap = require('yt-dlp-wrap').default;
 
-const execFileAsync = promisify(execFile);
+const ytDlpCacheDir = path.join(os.tmpdir(), 'convertisseurytb-bin');
+const ytDlpBinaryPath = path.join(ytDlpCacheDir, 'yt-dlp');
+let ytDlpWrapPromise = null;
 
 function isYouTubeUrl(input) {
     try {
@@ -23,37 +25,44 @@ function isYouTubeUrl(input) {
 }
 
 function getYtDlpBinary() {
-    return path.join(
-        process.cwd(),
-        'node_modules',
-        'youtube-dl-exec',
-        'bin',
-        process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp'
-    );
+    return ytDlpBinaryPath;
+}
+
+async function ensureYtDlpWrap() {
+    if (ytDlpWrapPromise) {
+        return ytDlpWrapPromise;
+    }
+
+    ytDlpWrapPromise = (async () => {
+        await fs.promises.mkdir(ytDlpCacheDir, { recursive: true });
+
+        if (!fs.existsSync(ytDlpBinaryPath)) {
+            await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
+        }
+
+        return new YTDlpWrap(ytDlpBinaryPath);
+    })();
+
+    return ytDlpWrapPromise;
 }
 
 async function downloadWithYtDlp(url, ytDlpArgs) {
     const tempDir = path.join(os.tmpdir(), 'convertisseurytb', `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
     await fs.promises.mkdir(tempDir, { recursive: true });
 
-    const ytDlpBinary = getYtDlpBinary();
-    const { stdout } = await execFileAsync(
-        ytDlpBinary,
-        [
-            '--no-playlist',
-            '--no-warnings',
-            '--print',
-            'after_move:filepath',
-            '--output',
-            path.join(tempDir, '%(title).200s-%(id)s.%(ext)s'),
-            ...ytDlpArgs,
-            url,
-        ],
-        {
-            windowsHide: true,
-            maxBuffer: 10 * 1024 * 1024,
-        }
-    );
+    const ytDlpWrap = await ensureYtDlpWrap();
+    const stdout = await ytDlpWrap.execPromise([
+        '--no-playlist',
+        '--no-warnings',
+        '--ffmpeg-location',
+        ffmpegPath,
+        '--print',
+        'after_move:filepath',
+        '--output',
+        path.join(tempDir, '%(title).200s-%(id)s.%(ext)s'),
+        ...ytDlpArgs,
+        url,
+    ]);
 
     const generatedFilePath = stdout
         .split(/\r?\n/)
