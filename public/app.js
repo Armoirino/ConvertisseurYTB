@@ -83,65 +83,45 @@ async function startDownload(format) {
     setProgress(8);
     startLoadingAnimation();
 
-    const xhr = new XMLHttpRequest();
-    activeXhr = xhr;
-    xhr.open('GET', `/download?url=${encodeURIComponent(url)}&format=${format}`, true);
-    xhr.responseType = 'blob';
+    const controller = new AbortController();
+    activeXhr = controller;
 
-    xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) {
-            const percent = Math.max(8, Math.min(95, (event.loaded / event.total) * 100));
-            setProgress(percent);
-        }
-    };
+    try {
+        const response = await fetch(`/download?url=${encodeURIComponent(url)}&format=${format}`, {
+            method: 'GET',
+            signal: controller.signal,
+        });
 
-    xhr.onprogress = (event) => {
-        if (event.lengthComputable) {
-            const percent = Math.max(8, Math.min(95, (event.loaded / event.total) * 100));
-            setProgress(percent);
-        }
-    };
-
-    xhr.onload = () => {
-        activeXhr = null;
-
-        if (xhr.status !== 200) {
-            downloadButton.disabled = false;
-            stopLoadingAnimation();
-            setStatus(xhr.responseText || 'Le téléchargement a échoué.', 'error');
-            setProgress(0);
-            return;
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(errorText || 'Le téléchargement a échoué.');
         }
 
-        const disposition = xhr.getResponseHeader('Content-Disposition') || '';
+        const disposition = response.headers.get('Content-Disposition') || '';
         const fileNameMatch = disposition.match(/filename="?([^";]+)"?/i);
         const fileName = fileNameMatch ? fileNameMatch[1] : `download.${format}`;
+        const blob = await response.blob();
 
-        triggerBrowserDownload(xhr.response, fileName);
         stopLoadingAnimation();
         setProgress(100);
         setStatus('Téléchargement terminé.');
+        triggerBrowserDownload(blob, fileName);
         doneActions.hidden = false;
         downloadButton.disabled = false;
-    };
-
-    xhr.onerror = () => {
+        activeXhr = null;
+    } catch (error) {
         activeXhr = null;
         downloadButton.disabled = false;
         stopLoadingAnimation();
-        setStatus('Erreur réseau pendant le téléchargement.', 'error');
-        setProgress(0);
-    };
 
-    xhr.onabort = () => {
-        activeXhr = null;
-        downloadButton.disabled = false;
-        stopLoadingAnimation();
-        setStatus('Téléchargement annulé.', 'error');
-        setProgress(0);
-    };
+        if (error.name === 'AbortError') {
+            setStatus('Téléchargement annulé.', 'error');
+        } else {
+            setStatus(error.message || 'Erreur réseau pendant le téléchargement.', 'error');
+        }
 
-    xhr.send();
+        setProgress(0);
+    }
 }
 
 formatButtons.forEach((button) => {

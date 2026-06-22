@@ -8,3 +8,4 @@ package-lock.json
 *.tmp
 *.log
 .DS_Store
+.vercel/
