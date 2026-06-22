@@ -4,6 +4,14 @@
     {
       "src": "/download",
       "dest": "/api/download.js"
+    },
+    {
+      "src": "/",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/$1"
     }
   ]
 }
