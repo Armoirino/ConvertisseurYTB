@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#071018">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Convertisseur">
+    <meta name="description" content="Application éducative pour convertir une vidéo YouTube en MP3 ou MP4.">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <title>Convertisseur YTB</title>
+</head>
+<body>
+    <main class="app-shell">
+        <section class="card">
+            <div class="eyebrow">Convertisseur YTB</div>
+            <h1>Colle ton lien, choisis le format, télécharge.</h1>
+
+            <div class="field">
+                <label for="url">Lien YouTube</label>
+                <input id="url" name="url" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" spellcheck="false">
+            </div>
+
+            <div class="choice" role="group" aria-label="Choix du format">
+                <button class="format-button is-active" type="button" data-format="mp3">MP3</button>
+                <button class="format-button" type="button" data-format="mp4">MP4</button>
+            </div>
+
+            <button id="downloadButton" class="download-button" type="button">Lancer le téléchargement</button>
+
+            <div class="progress-wrap" aria-live="polite">
+                <div class="progress-meta">
+                    <span id="status">En attente d’un lien.</span>
+                    <span id="percent">0%</span>
+                </div>
+                <div class="progress-track" aria-hidden="true">
+                    <div class="progress-bar" id="progressBar"></div>
+                </div>
+            </div>
+
+            <div id="doneActions" class="done-actions" hidden>
+                <button id="resetButton" class="secondary-button" type="button">Mettre un autre URL</button>
+            </div>
+        </section>
+    </main>
+
+    <script src="/app.js"></script>
+</body>
+</html>
