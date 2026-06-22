@@ -1,12 +1,11 @@
 const fs = require('fs');
 const os = require('os');
+const { spawn } = require('child_process');
 const path = require('path');
 const ffmpegPath = require('ffmpeg-static');
-const YTDlpWrap = require('yt-dlp-wrap').default;
+const ytdl = require('@distube/ytdl-core');
 
-const ytDlpCacheDir = path.join(os.tmpdir(), 'convertisseurytb-bin');
-const ytDlpBinaryPath = path.join(ytDlpCacheDir, 'yt-dlp');
-let ytDlpWrapPromise = null;
+const YT_CLIENTS = ['WEB_EMBEDDED', 'TV', 'ANDROID', 'IOS'];
 
 function isYouTubeUrl(input) {
     try {
@@ -24,57 +23,25 @@ function isYouTubeUrl(input) {
     }
 }
 
-function getYtDlpBinary() {
-    return ytDlpBinaryPath;
+function spawnFfmpeg(args) {
+    return spawn(ffmpegPath, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+    });
 }
 
-async function ensureYtDlpWrap() {
-    if (ytDlpWrapPromise) {
-        return ytDlpWrapPromise;
-    }
-
-    ytDlpWrapPromise = (async () => {
-        await fs.promises.mkdir(ytDlpCacheDir, { recursive: true });
-
-        if (!fs.existsSync(ytDlpBinaryPath)) {
-            await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
-        }
-
-        return new YTDlpWrap(ytDlpBinaryPath);
-    })();
-
-    return ytDlpWrapPromise;
-}
-
-async function downloadWithYtDlp(url, ytDlpArgs) {
-    const tempDir = path.join(os.tmpdir(), 'convertisseurytb', `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
-    await fs.promises.mkdir(tempDir, { recursive: true });
-
-    const ytDlpWrap = await ensureYtDlpWrap();
-    const stdout = await ytDlpWrap.execPromise([
-        '--no-playlist',
-        '--no-warnings',
-        '--ffmpeg-location',
-        ffmpegPath,
-        '--print',
-        'after_move:filepath',
-        '--output',
-        path.join(tempDir, '%(title).200s-%(id)s.%(ext)s'),
-        ...ytDlpArgs,
-        url,
-    ]);
-
-    const generatedFilePath = stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .pop();
-
-    if (!generatedFilePath) {
-        throw new Error('Impossible de récupérer le fichier généré');
-    }
-
-    return { generatedFilePath, tempDir };
+function ytdlOptions(overrides = {}) {
+    return {
+        requestOptions: {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                referer: 'https://www.youtube.com/',
+            },
+        },
+        playerClients: YT_CLIENTS,
+        highWaterMark: 1 << 25,
+        ...overrides,
+    };
 }
 
 module.exports = async (req, res) => {
@@ -85,65 +52,106 @@ module.exports = async (req, res) => {
     }
 
     try {
-        if (format === 'mp3') {
-            const { generatedFilePath, tempDir } = await downloadWithYtDlp(url, [
-                '--extract-audio',
-                '--audio-format',
-                'mp3',
-                '--audio-quality',
-                '0',
-            ]);
+        const info = await ytdl.getInfo(url, ytdlOptions());
+        const safeTitle = info.videoDetails.title.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
 
-            res.setHeader('Content-Disposition', `attachment; filename="${path.basename(generatedFilePath)}"`);
+        if (format === 'mp3') {
+            res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.mp3"`);
             res.setHeader('Content-Type', 'audio/mpeg');
 
-            const cleanup = async () => {
-                await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
-            };
+            const audioStream = ytdl(url, {
+                ...ytdlOptions(),
+                filter: 'audioonly',
+                quality: 'highestaudio',
+            });
 
-            res.on('finish', cleanup);
-            res.on('close', cleanup);
+            const ffmpeg = spawnFfmpeg([
+                '-i', 'pipe:0',
+                '-vn',
+                '-f', 'mp3',
+                '-b:a', '192k',
+                'pipe:1',
+            ]);
 
-            fs.createReadStream(generatedFilePath)
-                .on('error', (err) => {
-                    console.error('Erreur lecture MP3:', err.message);
-                    if (!res.headersSent) {
-                        res.status(500).send('Erreur lors de la lecture du MP3');
-                    } else {
-                        res.destroy(err);
-                    }
-                })
-                .pipe(res);
-            return;
-        }
-
-        const { generatedFilePath, tempDir } = await downloadWithYtDlp(url, [
-            '-f',
-            'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            '--merge-output-format',
-            'mp4',
-        ]);
-
-        res.setHeader('Content-Disposition', `attachment; filename="${path.basename(generatedFilePath)}"`);
-        res.setHeader('Content-Type', 'video/mp4');
-
-        const cleanup = async () => {
-            await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
-        };
-
-        res.on('finish', cleanup);
-        res.on('close', cleanup);
-
-        fs.createReadStream(generatedFilePath)
-            .on('error', (err) => {
-                console.error('Erreur lecture MP4:', err.message);
+            audioStream.on('error', (err) => {
+                console.error('Erreur audio stream:', err.message);
                 if (!res.headersSent) {
-                    res.status(500).send('Erreur lors de la lecture du MP4');
+                    res.status(500).send(`Erreur audio: ${err.message}`);
                 } else {
                     res.destroy(err);
                 }
-            })
-            .pipe(res);
+            });
+
+            ffmpeg.stderr.on('data', (chunk) => {
+                console.error(String(chunk));
+            });
+
+            ffmpeg.on('error', (err) => {
+                console.error('Erreur ffmpeg MP3:', err.message);
+                if (!res.headersSent) {
+                    res.status(500).send(`Erreur MP3: ${err.message}`);
+                } else {
+                    res.destroy(err);
+                }
+            });
+
+            ffmpeg.on('close', (code) => {
+                if (code !== 0 && !res.headersSent) {
+                    res.status(500).send('Erreur lors de la conversion MP3');
+                }
+            });
+
+            audioStream.pipe(ffmpeg.stdin);
+            ffmpeg.stdout.pipe(res);
+            return;
+        }
+
+        res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.mp4"`);
+        res.setHeader('Content-Type', 'video/mp4');
+
+        const videoStream = ytdl(url, {
+            ...ytdlOptions(),
+            filter: (formatItem) => formatItem.container === 'mp4' && formatItem.hasVideo && formatItem.hasAudio,
+            quality: 'highest',
+        });
+
+        const ffmpeg = spawnFfmpeg([
+            '-i', 'pipe:0',
+            '-c', 'copy',
+            '-f', 'mp4',
+            'pipe:1',
+        ]);
+
+        videoStream.on('error', (err) => {
+            console.error('Erreur vidéo stream:', err.message);
+            if (!res.headersSent) {
+                res.status(500).send(`Erreur vidéo: ${err.message}`);
+            } else {
+                res.destroy(err);
+            }
+        });
+
+        ffmpeg.stderr.on('data', (chunk) => {
+            console.error(String(chunk));
+        });
+
+        ffmpeg.on('error', (err) => {
+            console.error('Erreur ffmpeg MP4:', err.message);
+            if (!res.headersSent) {
+                res.status(500).send(`Erreur MP4: ${err.message}`);
+            } else {
+                res.destroy(err);
+            }
+        });
+
+        ffmpeg.on('close', (code) => {
+            if (code !== 0 && !res.headersSent) {
+                res.status(500).send('Erreur lors de la conversion MP4');
+            }
+        });
+
+        videoStream.pipe(ffmpeg.stdin);
+        ffmpeg.stdout.pipe(res);
     } catch (err) {
         console.error('Erreur téléchargement:', err.stack || err.message);
         res.status(500).send(`Erreur lors du traitement: ${err.message}`);
